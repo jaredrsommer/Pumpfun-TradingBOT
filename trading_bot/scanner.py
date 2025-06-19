@@ -24,6 +24,12 @@ from .auth_utils import get_rugcheck_jwt
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Helper function for shortening addresses in logs
+def _shorten_address(address: str, chars: int = 4) -> str:
+    if not address or len(address) <= chars * 2:
+        return address
+    return f"{address[:chars]}...{address[-chars:]}"
+
 class TokenScanner:
     def __init__(self):
         self.session: Optional[aiohttp.ClientSession] = None
@@ -106,99 +112,113 @@ class TokenScanner:
 
     def analyze_token_metrics(self, detailed_pair_data, token_address_from_profile=None, token_symbol_from_profile=None):
         """Phase 3: Analyze token metrics based on detailed_pair_data."""
-        pair_base_token_symbol = detailed_pair_data.get('baseToken', {}).get('symbol', 'UnknownSymbol')
-        pair_address = detailed_pair_data.get('pairAddress', 'UnknownPairAddr')
-        # Use token_address_from_profile (mint address) for primary identification in logs
-        log_prefix = f"Token {token_symbol_from_profile or pair_base_token_symbol} (Mint: {token_address_from_profile or 'N/A'}, Pair: {pair_address}) (Phase 3):"
+        actual_symbol = detailed_pair_data.get('baseToken', {}).get('symbol') or token_symbol_from_profile or "UnknownSymbol"
+        pair_address_short = _shorten_address(detailed_pair_data.get('pairAddress', 'UnknownPairAddr'))
+
+        log_prefix_phase3 = f"📊 Token ${actual_symbol} (Pair: {pair_address_short}) (Phase 3):"
+        logger.info(f"{log_prefix_phase3} Starting metric analysis.")
 
         try:
             if not detailed_pair_data:
+                logger.warning(f"{log_prefix_phase3} ❌ No detailed pair data provided. Skipping. ⏭️")
                 return False, "No detailed pair data provided"
-
-            logger.info(f"{log_prefix} Starting Phase 3 metric analysis.")
 
             # Market Cap (FDV) Check
             fdv_data = detailed_pair_data.get('fdv')
-            if fdv_data is None: return False, f"{log_prefix} Missing FDV (market cap)"
+            if fdv_data is None:
+                logger.info(f"{log_prefix_phase3}   ❌ Market Cap Failed: Missing FDV data. Skipping. ⏭️")
+                return False, "Missing FDV (market cap)"
             try: market_cap = float(fdv_data)
-            except (ValueError, TypeError): return False, f"{log_prefix} Invalid FDV data type: {fdv_data}"
+            except (ValueError, TypeError):
+                logger.info(f"{log_prefix_phase3}   ❌ Market Cap Failed: Invalid FDV data type ({fdv_data}). Skipping. ⏭️")
+                return False, f"Invalid FDV data type: {fdv_data}"
             if market_cap < TARGET_MARKET_CAP_TO_SCAN:
-                return False, f"{log_prefix} MC ${market_cap:,.0f} < Target ${TARGET_MARKET_CAP_TO_SCAN:,.0f}"
+                logger.info(f"{log_prefix_phase3}   ❌ Market Cap Failed: ${market_cap:,.0f} < Target ${TARGET_MARKET_CAP_TO_SCAN:,.0f}. Skipping. ⏭️")
+                return False, f"MC ${market_cap:,.0f} < Target ${TARGET_MARKET_CAP_TO_SCAN:,.0f}"
             if market_cap > MAX_MARKET_CAP:
-                return False, f"{log_prefix} MC ${market_cap:,.0f} > Max ${MAX_MARKET_CAP:,.0f}"
-            logger.info(f"{log_prefix} MC Passed: Target ${TARGET_MARKET_CAP_TO_SCAN:,.0f} <= Actual ${market_cap:,.0f} <= Max ${MAX_MARKET_CAP:,.0f}")
+                logger.info(f"{log_prefix_phase3}   ❌ Market Cap Failed: ${market_cap:,.0f} > Max ${MAX_MARKET_CAP:,.0f}. Skipping. ⏭️")
+                return False, f"MC ${market_cap:,.0f} > Max ${MAX_MARKET_CAP:,.0f}"
+            logger.info(f"{log_prefix_phase3}   ✅ Market Cap Passed: Target ${TARGET_MARKET_CAP_TO_SCAN:,.0f} <= Actual ${market_cap:,.0f} <= Max ${MAX_MARKET_CAP:,.0f}")
 
             # Token Age (Pair Creation Time) Check
             created_timestamp = detailed_pair_data.get('pairCreatedAt')
-            if created_timestamp is None: return False, f"{log_prefix} Missing pairCreatedAt"
-            try: created_at = datetime.fromtimestamp(created_timestamp / 1000) # Assuming ms timestamp
-            except (TypeError, ValueError): return False, f"{log_prefix} Invalid pairCreatedAt timestamp: {created_timestamp}"
+            if created_timestamp is None:
+                logger.info(f"{log_prefix_phase3}   ❌ Age Failed: Missing pairCreatedAt. Skipping. ⏭️")
+                return False, "Missing pairCreatedAt"
+            try: created_at = datetime.fromtimestamp(created_timestamp / 1000)
+            except (TypeError, ValueError):
+                logger.info(f"{log_prefix_phase3}   ❌ Age Failed: Invalid pairCreatedAt timestamp ({created_timestamp}). Skipping. ⏭️")
+                return False, f"Invalid pairCreatedAt timestamp: {created_timestamp}"
             age_hours = (datetime.now() - created_at).total_seconds() / 3600
             if age_hours > MAX_TOKEN_AGE_HOURS:
-                return False, f"{log_prefix} Token too old: {age_hours:.1f}h > {MAX_TOKEN_AGE_HOURS}h"
-            logger.info(f"{log_prefix} Age Passed: {age_hours:.1f}h <= {MAX_TOKEN_AGE_HOURS}h")
+                logger.info(f"{log_prefix_phase3}   ❌ Age Failed: {age_hours:.1f}h > {MAX_TOKEN_AGE_HOURS}h. Skipping. ⏭️")
+                return False, f"Token too old: {age_hours:.1f}h > {MAX_TOKEN_AGE_HOURS}h"
+            logger.info(f"{log_prefix_phase3}   ✅ Age Passed: {age_hours:.1f}h <= {MAX_TOKEN_AGE_HOURS}h")
 
             # Liquidity Check
             liquidity_data = detailed_pair_data.get('liquidity')
-            if not liquidity_data or liquidity_data.get('usd') is None: return False, f"{log_prefix} Missing liquidity USD"
+            if not liquidity_data or liquidity_data.get('usd') is None:
+                logger.info(f"{log_prefix_phase3}   ❌ Liquidity Failed: Missing liquidity USD. Skipping. ⏭️")
+                return False, "Missing liquidity USD"
             try: liquidity_usd = float(liquidity_data['usd'])
-            except ValueError: return False, f"{log_prefix} Invalid liquidity USD type: {liquidity_data['usd']}"
+            except ValueError:
+                logger.info(f"{log_prefix_phase3}   ❌ Liquidity Failed: Invalid liquidity USD type ({liquidity_data['usd']}). Skipping. ⏭️")
+                return False, f"Invalid liquidity USD type: {liquidity_data['usd']}"
             if liquidity_usd < MIN_LIQUIDITY:
-                return False, f"{log_prefix} Liquidity ${liquidity_usd:,.0f} < Min ${MIN_LIQUIDITY:,.0f}"
-            logger.info(f"{log_prefix} Liquidity Passed: ${liquidity_usd:,.0f} >= ${MIN_LIQUIDITY:,.0f}")
+                logger.info(f"{log_prefix_phase3}   ❌ Liquidity Failed: ${liquidity_usd:,.0f} < Min ${MIN_LIQUIDITY:,.0f}. Skipping. ⏭️")
+                return False, f"Liquidity ${liquidity_usd:,.0f} < Min ${MIN_LIQUIDITY:,.0f}"
+            logger.info(f"{log_prefix_phase3}   ✅ Liquidity Passed: ${liquidity_usd:,.0f} >= ${MIN_LIQUIDITY:,.0f}")
 
             # Transactions Check
             txns_h1_data = detailed_pair_data.get('txns', {}).get('h1', {})
-            buys = txns_h1_data.get('buys', 0)
-            sells = txns_h1_data.get('sells', 0)
+            buys = txns_h1_data.get('buys', 0); sells = txns_h1_data.get('sells', 0)
             if (buys + sells) < MIN_TRANSACTIONS:
-                return False, f"{log_prefix} Txns (1h) {buys+sells} < Min {MIN_TRANSACTIONS}"
-            logger.info(f"{log_prefix} Transaction Count Passed: {buys+sells} >= {MIN_TRANSACTIONS}")
+                logger.info(f"{log_prefix_phase3}   ❌ Transactions Failed: (1h) {buys+sells} < Min {MIN_TRANSACTIONS}. Skipping. ⏭️")
+                return False, f"Txns (1h) {buys+sells} < Min {MIN_TRANSACTIONS}"
+            logger.info(f"{log_prefix_phase3}   ✅ Transaction Count Passed: {buys+sells} >= {MIN_TRANSACTIONS}")
 
-            current_buy_sell_ratio = self._calculate_buy_sell_ratio(detailed_pair_data) # Use the updated method
-            if sells > 0 and current_buy_sell_ratio < MIN_BUY_SELL_RATIO: # Check sells > 0 to avoid division by zero if ratio is inf
-                return False, f"{log_prefix} Buy/Sell ratio {current_buy_sell_ratio:.2f} < Min {MIN_BUY_SELL_RATIO}"
-            logger.info(f"{log_prefix} Buy/Sell Ratio Passed: {current_buy_sell_ratio:.2f} >= {MIN_BUY_SELL_RATIO}")
+            current_buy_sell_ratio = self._calculate_buy_sell_ratio(detailed_pair_data)
+            if sells > 0 and current_buy_sell_ratio < MIN_BUY_SELL_RATIO:
+                logger.info(f"{log_prefix_phase3}   ❌ Buy/Sell Ratio Failed: {current_buy_sell_ratio:.2f} < Min {MIN_BUY_SELL_RATIO}. Skipping. ⏭️")
+                return False, f"Buy/Sell ratio {current_buy_sell_ratio:.2f} < Min {MIN_BUY_SELL_RATIO}"
+            logger.info(f"{log_prefix_phase3}   ✅ Buy/Sell Ratio Passed: {current_buy_sell_ratio:.2f} >= {MIN_BUY_SELL_RATIO}")
 
             # Volume Spike Check
             volume_data = detailed_pair_data.get('volume', {})
-            try:
-                volume_1h = float(volume_data.get('h1', 0.0))
-                volume_24h = float(volume_data.get('h24', 0.0))
-            except ValueError: return False, f"{log_prefix} Invalid volume data type. H1: {volume_data.get('h1')}, H24: {volume_data.get('h24')}"
+            try: volume_1h = float(volume_data.get('h1', 0.0)); volume_24h = float(volume_data.get('h24', 0.0))
+            except ValueError:
+                logger.info(f"{log_prefix_phase3}   ❌ Volume Spike Failed: Invalid volume data. Skipping. ⏭️")
+                return False, f"Invalid volume data type. H1: {volume_data.get('h1')}, H24: {volume_data.get('h24')}"
 
-            if VOLUME_SPIKE_THRESHOLD > 0: # Only check if threshold is set
-                if volume_24h > 0 and volume_1h > 0 : # Avoid division by zero or meaningless spike calc
+            if VOLUME_SPIKE_THRESHOLD > 0:
+                if volume_24h > 0 and volume_1h > 0:
                     hourly_equiv_from_24h = volume_24h / 24
-                    if hourly_equiv_from_24h == 0: # Avoid division by zero if 24h vol is tiny
-                         if volume_1h > 0: # Any 1h volume is a spike if 24h avg is zero
-                            logger.info(f"{log_prefix} Volume Spike Passed (1h vol > 0, 24h avg vol = 0).")
-                         else: # No volume at all
-                            return False, f"{log_prefix} No volume spike: 1h vol is 0 and 24h avg vol is 0."
+                    if hourly_equiv_from_24h == 0:
+                        if volume_1h > 0: logger.info(f"{log_prefix_phase3}   ✅ Volume Spike Passed (1h vol > 0, 24h avg vol = 0)")
+                        else:
+                            logger.info(f"{log_prefix_phase3}   ❌ Volume Spike Failed: No 1h volume and 24h avg is 0. Skipping. ⏭️")
+                            return False, "No volume spike: 1h vol is 0 and 24h avg vol is 0."
                     elif (volume_1h / hourly_equiv_from_24h) < VOLUME_SPIKE_THRESHOLD:
-                        return False, f"{log_prefix} No volume spike: (1h/avg_1h_from_24h) {(volume_1h / hourly_equiv_from_24h):.1f}x < {VOLUME_SPIKE_THRESHOLD}x"
-                    else:
-                        logger.info(f"{log_prefix} Volume Spike Passed: {(volume_1h / hourly_equiv_from_24h):.1f}x >= {VOLUME_SPIKE_THRESHOLD}x")
-                elif volume_1h > 0 and volume_24h == 0: # 1h volume exists, but no 24h volume, considered a spike
-                     logger.info(f"{log_prefix} Volume Spike Passed (1h vol > 0, 24h vol = 0).")
-                else: # No 1h volume, or threshold is zero
-                    return False, f"{log_prefix} No volume spike: 1h vol is {volume_1h}, 24h vol is {volume_24h}. Threshold: {VOLUME_SPIKE_THRESHOLD}x"
-            else:
-                logger.info(f"{log_prefix} Volume spike check skipped as threshold is 0.")
-
+                        logger.info(f"{log_prefix_phase3}   ❌ Volume Spike Failed: (1h/avg_1h_from_24h) {(volume_1h / hourly_equiv_from_24h):.1f}x < {VOLUME_SPIKE_THRESHOLD}x. Skipping. ⏭️")
+                        return False, f"No volume spike: (1h/avg_1h_from_24h) {(volume_1h / hourly_equiv_from_24h):.1f}x < {VOLUME_SPIKE_THRESHOLD}x"
+                    else: logger.info(f"{log_prefix_phase3}   ✅ Volume Spike Passed: {(volume_1h / hourly_equiv_from_24h):.1f}x >= {VOLUME_SPIKE_THRESHOLD}x")
+                elif volume_1h > 0 and volume_24h == 0: logger.info(f"{log_prefix_phase3}   ✅ Volume Spike Passed (1h vol > 0, 24h vol = 0)")
+                else:
+                    logger.info(f"{log_prefix_phase3}   ❌ Volume Spike Failed: 1h vol is {volume_1h}, 24h vol is {volume_24h}. Threshold: {VOLUME_SPIKE_THRESHOLD}x. Skipping. ⏭️")
+                    return False, f"No volume spike: 1h vol is {volume_1h}, 24h vol is {volume_24h}. Threshold: {VOLUME_SPIKE_THRESHOLD}x"
+            else: logger.info(f"{log_prefix_phase3}   ℹ️ Volume spike check skipped (threshold is 0).")
 
             # Price Change Check (1h)
             price_change_1h = float(detailed_pair_data.get('priceChange', {}).get('h1', 0.0))
-            # Example: if price_change_1h < -10 (ALLOW_NEGATIVE_PRICE_CHANGE_PERCENTAGE could be a config)
-            # For now, let's assume we don't want significant drops.
-            if price_change_1h < -25: # Example threshold: filter if price dropped more than 25% in 1hr
-                return False, f"{log_prefix} Price drop (1h): {price_change_1h}% < -25%"
-            logger.info(f"{log_prefix} Price Change (1h) Passed: {price_change_1h}% >= -25%")
+            if price_change_1h < -25: # Example threshold
+                logger.info(f"{log_prefix_phase3}   ❌ Price Change Failed: (1h) {price_change_1h}% < -25%. Skipping. ⏭️")
+                return False, f"Price drop (1h): {price_change_1h}% < -25%"
+            logger.info(f"{log_prefix_phase3}   ✅ Price Change (1h) Passed: {price_change_1h}% >= -25%")
 
-            logger.info(f"{log_prefix} All Phase 3 metric checks passed.")
+            logger.info(f"{log_prefix_phase3}   🎉 All metric checks passed.")
             return True, "Token passed all Phase 3 checks"
         except Exception as e:
-            logger.error(f"{log_prefix} Error in analyze_token_metrics (Phase 3): {e}", exc_info=True)
+            logger.error(f"{log_prefix_phase3} Error in analyze_token_metrics (Phase 3): {e}", exc_info=True)
             return False, str(e)
 
     async def scan_new_tokens(self):
@@ -206,146 +226,117 @@ class TokenScanner:
         try:
             # Use DEXSCREENER_TOKEN_PROFILES_API for Phase 1
             params = {"chainId": "solana"}
-            logger.info(f"Phase 1: Starting scan for new token profiles using {DEXSCREENER_TOKEN_PROFILES_API} with params {params}")
+            logger.info(f"🔄 Starting scan for new token profiles using {DEXSCREENER_TOKEN_PROFILES_API} with params {params}")
             async with self.session.get(DEXSCREENER_TOKEN_PROFILES_API, params=params) as response:
                 response.raise_for_status()
                 token_profiles = await response.json()
                 self.scan_count += 1
-                logger.info(f"Phase 1 Scan Iteration {self.scan_count}: Discovered {len(token_profiles)} token profiles.")
+                logger.info(f"🔄 Scan Iteration {self.scan_count}: Discovered {len(token_profiles)} token profiles.")
 
                 for token_profile in token_profiles:
-                    # Extract basic identifiers
-                    token_address = token_profile.get('tokenAddress')
-                    if not token_address:
-                        logger.debug("Phase 1: Skipping profile due to missing tokenAddress.")
+                    base_token_address = token_profile.get('tokenAddress')
+                    if not base_token_address:
+                        logger.debug("Skipping profile due to missing tokenAddress. ⏭️")
                         continue
 
-                    token_symbol = token_profile.get('symbol', token_profile.get('name', 'UnknownSymbol'))
-                    phase1_discovery_time = datetime.now() # Record Phase 1 discovery time
-                    # Using token_address (mint address) for primary identification in logs
-                    log_prefix_phase1 = f"Token {token_symbol} (Mint: {token_address}) (Phase 1):"
+                    base_token_address_short = _shorten_address(base_token_address)
+                    token_symbol_from_profile = token_profile.get('symbol') or token_profile.get('name') or "UnknownSymbol"
+                    phase1_discovery_time = datetime.now()
+
+                    log_prefix_phase1 = f"✨ Token {token_symbol_from_profile} (Mint: {base_token_address_short}) (Phase 1)"
                     logger.info(f"{log_prefix_phase1} Discovered at {phase1_discovery_time}.")
 
-                    # Pump.fun Suffix Filter (applied BEFORE Phase 2 API calls)
                     if FILTER_FOR_PUMPFUN_ONLY and PUMPFUN_ADDRESS_SUFFIX:
-                        if not token_address.endswith(PUMPFUN_ADDRESS_SUFFIX):
-                            logger.debug(f"{log_prefix_phase1} Skipped (Pump.fun suffix filter): Address '{token_address}' does not match suffix '{PUMPFUN_ADDRESS_SUFFIX}'.")
+                        if not base_token_address.endswith(PUMPFUN_ADDRESS_SUFFIX):
+                            logger.info(f"{log_prefix_phase1} ❌ Skipped: Mint '{base_token_address}' does not match Pump.fun suffix '{PUMPFUN_ADDRESS_SUFFIX}'. ⏭️")
                             continue
                         else:
-                            logger.info(f"{log_prefix_phase1} Passed Pump.fun suffix filter. Address '{token_address}' matches suffix '{PUMPFUN_ADDRESS_SUFFIX}'.")
+                            logger.info(f"{log_prefix_phase1} ✅ Passed Pump.fun suffix filter.")
                     elif FILTER_FOR_PUMPFUN_ONLY and not PUMPFUN_ADDRESS_SUFFIX:
-                        logger.warning(f"{log_prefix_phase1} Pump.fun filtering is enabled but PUMPFUN_ADDRESS_SUFFIX is not set. No suffix filtering applied.")
+                        logger.warning(f"{log_prefix_phase1} ⚠️ Pump.fun filtering enabled but PUMPFUN_ADDRESS_SUFFIX is not set.")
 
-                    # Phase 1 conceptual check (already minimal, mainly for structure)
-                    # In reality, the old analyze_token_metrics for Phase 1 was just basic validation.
-                    # We can consider it passed if we reached here after suffix filter.
-                    logger.info(f"{log_prefix_phase1} Conceptually passed Phase 1 (discovery and initial filtering).")
-
-                    # --- Phase 2: Detailed Metrics Fetching ---
                     logger.info(f"{log_prefix_phase1} Starting Phase 2: Detailed Metrics Fetching.")
                     pair_data = None
-                    # Use DEXSCREENER_SEARCH_API for Phase 2, append /search path
                     dex_search_base_url = DEXSCREENER_SEARCH_API
-                    search_url = f"{dex_search_base_url}/search" if dex_search_base_url else "https://api.dexscreener.com/latest/dex/search" # Fallback if not configured
+                    search_url = f"{dex_search_base_url}/search" if dex_search_base_url else "https://api.dexscreener.com/latest/dex/search"
 
-                    # Querying strategies
                     queries = []
-                    if token_symbol and token_symbol != 'UnknownSymbol':
-                        queries.append(f"{token_symbol}/SOL")
-                        queries.append(f"{token_symbol}/USDC")
-                    queries.append(token_address) # Fallback to token address
+                    if token_symbol_from_profile != 'UnknownSymbol':
+                        queries.append(f"{token_symbol_from_profile}/SOL")
+                        queries.append(f"{token_symbol_from_profile}/USDC")
+                    queries.append(base_token_address)
 
                     for q_idx, q_value in enumerate(queries):
-                        # Use log_prefix_phase1 here as pair_data specific log_prefix (log_prefix_phase3) isn't available yet
-                        logger.info(f"{log_prefix_phase1} Phase 2: Attempting search with q='{q_value}' (Attempt {q_idx+1}/{len(queries)}) to {search_url}")
+                        logger.info(f"{log_prefix_phase1} 🔎 Phase 2: Attempting search with q='{q_value}' (Attempt {q_idx+1}/{len(queries)})")
                         try:
                             async with self.session.get(search_url, params={'q': q_value}) as search_response:
                                 search_response.raise_for_status()
                                 search_data = await search_response.json()
-
                                 if search_data and search_data.get('pairs'):
                                     relevant_pairs = []
                                     for p in search_data['pairs']:
-                                        base = p.get('baseToken', {}).get('address')
-                                        quote_sym = p.get('quoteToken', {}).get('symbol', '').upper()
-
-                                        if base == token_address and quote_sym in ['SOL', 'USDC', 'USDT']:
+                                        if p.get('baseToken', {}).get('address') == base_token_address and \
+                                           p.get('quoteToken', {}).get('symbol', '').upper() in ['SOL', 'USDC', 'USDT']:
                                             relevant_pairs.append(p)
-
                                     if relevant_pairs:
-                                        # Simplistic choice: first relevant. Could be sorted by liquidity.
-                                        pair_data = relevant_pairs[0]
-                                        logger.info(f"{log_prefix_phase1} Phase 2: Successfully fetched pair data for q='{q_value}'. Pair: {pair_data.get('pairAddress')}")
+                                        pair_data = relevant_pairs[0] # Simplistic: take first relevant
+                                        pair_address_short = _shorten_address(pair_data.get('pairAddress', 'N/A'))
+                                        logger.info(f"{log_prefix_phase1} 🔗 Phase 2: Successfully fetched pair data for q='{q_value}'. Pair: {pair_address_short}")
                                         break
-                                    else:
-                                        logger.info(f"{log_prefix_phase1} Phase 2: Search with q='{q_value}' yielded pairs, but none directly matched criteria.")
-                                else:
-                                    logger.info(f"{log_prefix_phase1} Phase 2: Search with q='{q_value}' returned no pairs.")
-                        except aiohttp.ClientResponseError as e:
-                            logger.error(f"{log_prefix_phase1} Phase 2: HTTP error with q='{q_value}': {e.status} - {e.message}")
-                        except Exception as e:
-                            logger.error(f"{log_prefix_phase1} Phase 2: Unexpected error with q='{q_value}': {e}", exc_info=True)
-
-                        if pair_data: # If pair_data was found in this attempt, no need to try other queries
-                            break
+                                    else: logger.warning(f"{log_prefix_phase1} ⚠️ Phase 2: Search q='{q_value}' yielded pairs, but none matched criteria.")
+                                else: logger.warning(f"{log_prefix_phase1} ⚠️ Phase 2: Search q='{q_value}' returned no pairs.")
+                        except aiohttp.ClientResponseError as e: logger.error(f"{log_prefix_phase1}  Phase 2: HTTP error for q='{q_value}': {e.status} - {e.message}")
+                        except Exception as e: logger.error(f"{log_prefix_phase1} Phase 2: Unexpected error for q='{q_value}': {e}", exc_info=True)
+                        if pair_data: break
 
                     if not pair_data:
-                        logger.warning(f"{log_prefix} Phase 2: Failed to fetch detailed metrics for token after all query attempts. Skipping.")
-                        # Optionally, add a placeholder or flag to potential_tokens if you still want to keep it
-                        # For now, we skip adding it if detailed metrics fail.
+                        logger.warning(f"{log_prefix_phase1} ⚠️ Phase 2: Failed to fetch detailed metrics after all attempts. Skipping. ⏭️")
                         continue
 
-                    # --- End of Phase 2 ---
+                    # --- Phase 3 ---
+                    actual_pair_symbol = pair_data.get('baseToken',{}).get('symbol') or token_symbol_from_profile
+                    short_pair_address_for_log = _shorten_address(pair_data.get('pairAddress','N/A'))
+                    log_prefix_phase3_context = f"Token ${actual_pair_symbol} (Pair: {short_pair_address_for_log})"
 
-                    # Update log_prefix for Phase 3 using pair_data if available, fallback to phase 1 info
-                    log_prefix_phase3 = f"Token {pair_data.get('baseToken',{}).get('symbol', token_symbol)} (Mint: {token_address}, Pair: {pair_data.get('pairAddress','N/A')}) (Phase 3):"
-
-                    # --- Phase 3: Metric Analysis ---
-                    passed_phase3_checks, reason = self.analyze_token_metrics(pair_data, token_address, token_symbol)
+                    passed_phase3_checks, reason = self.analyze_token_metrics(pair_data, base_token_address, token_symbol_from_profile)
                     if not passed_phase3_checks:
-                        logger.info(f"{log_prefix_phase3} Failed Phase 3 metric checks: {reason}")
+                        # analyze_token_metrics now logs its own failures, so just continue
                         continue
-                    logger.info(f"{log_prefix_phase3} Passed Phase 3 metric checks.")
+                    # analyze_token_metrics logs its own overall success message.
 
-                    # Existing RugCheck and Social Sentiment
-                    if not self.session or self.session.closed: await self.initialize() # Ensure session
-                    rugcheck_assessment = await self.verify_token_safety_rugcheck(self.session, token_address) # Use mint address for RugCheck
+                    logger.info(f"{log_prefix_phase3_context} (Phase 3) 🛡️ Querying RugCheck summary for {base_token_address_short}")
+                    if not self.session or self.session.closed: await self.initialize()
+                    rugcheck_assessment = await self.verify_token_safety_rugcheck(self.session, base_token_address)
                     log_score_norm = rugcheck_assessment.get('score_normalised', 'N/A')
-                    # Use consistent log prefix for these subsequent checks
-                    logger.info(f"{log_prefix_phase3} RugCheck: Safe={rugcheck_assessment.get('is_safe')}, ScoreNorm={log_score_norm}, Reasons={'; '.join(rugcheck_assessment.get('reasons',[])) if rugcheck_assessment.get('reasons') else 'N/A'}, APIError='{rugcheck_assessment.get('api_error')}'")
 
                     if not rugcheck_assessment.get('is_safe', False):
-                        logger.info(f"{log_prefix_phase3} Filtered out by RugCheck. Reasons: {'; '.join(rugcheck_assessment.get('reasons', ['No specific reasons given']))}")
+                        logger.warning(f"{log_prefix_phase3_context} (Phase 3) 👎 RugCheck: Unsafe. ScoreNorm={log_score_norm}. Reasons: {'; '.join(rugcheck_assessment.get('reasons',[])) if rugcheck_assessment.get('reasons') else 'N/A'}. Filtered out. ⏭️")
                         continue
-                    logger.info(f"{log_prefix_phase3} Passed RugCheck safety screen.")
+                    logger.info(f"{log_prefix_phase3_context} (Phase 3) 👍 RugCheck: Safe. ScoreNorm={log_score_norm}.")
 
-                    # Use pair's base token symbol for social sentiment if available, else fallback to profile's symbol
-                    social_sentiment_token_symbol = pair_data.get('baseToken',{}).get('symbol', token_symbol)
-                    social_sentiment_data = await self.get_social_sentiment_placeholder(self.session, social_sentiment_token_symbol, token_address)
-                    logger.info(f"{log_prefix_phase3} Sentiment (Placeholder): Score='{social_sentiment_data.get('sentiment_score', 'N/A')}', Label='{social_sentiment_data.get('sentiment', 'N/A')}'")
+                    social_sentiment_token_symbol = actual_pair_symbol
+                    social_sentiment_data = await self.get_social_sentiment_placeholder(self.session, social_sentiment_token_symbol, base_token_address)
+                    logger.info(f"{log_prefix_phase3_context} (Phase 3) 💬 Sentiment (Placeholder): Score='{social_sentiment_data.get('sentiment_score', 'N/A')}', Label='{social_sentiment_data.get('sentiment', 'N/A')}'")
 
-                    # Add to potential_tokens list
+                    price_usd_str = f"${float(pair_data.get('priceUsd', 0)):.6f}" if pair_data.get('priceUsd') else "N/A"
                     token_entry = {
-                        'address': token_address, # Mint address
+                        'address': base_token_address,
                         'pair_address': pair_data.get('pairAddress'),
-                        'symbol': pair_data.get('baseToken',{}).get('symbol', token_symbol), # Prefer symbol from pair data
+                        'symbol': actual_pair_symbol,
                         'timestamp': phase1_discovery_time,
                         'phase1_discovered_at': phase1_discovery_time,
-                        'phase2_data_fetched_at': datetime.now(), # This should ideally be set when pair_data is confirmed
+                        'phase2_data_fetched_at': datetime.now(), # TODO: More precise timing if critical
                         'detailed_pair_data': pair_data,
                         'rugcheck_assessment': rugcheck_assessment,
                         'social_sentiment': social_sentiment_data,
                         'api_source': 'token-profiles & dex-search',
-                        'log_prefix_for_trade': log_prefix_phase3 # Store a consistent log prefix for trading
+                        'log_prefix_for_trade': log_prefix_phase3_context
                     }
-                    # Correcting phase2_data_fetched_at: This should be captured right after pair_data is confirmed.
-                    # For simplicity in this diff, we'll use current time. A more precise way would be to set it right after `pair_data = relevant_pairs[0]`.
-
                     self.potential_tokens.append(token_entry)
-                    logger.info(f"{log_prefix_phase3} Token passed all checks and added to potential tokens list.")
+                    logger.info(f"{log_prefix_phase3_context} (Phase 3) 🚀 Added to potential tokens. Price: {price_usd_str}")
 
         except Exception as e:
-            logger.error(f"Error in scan_new_tokens (Phases 1-3): {e}", exc_info=True)
+            logger.error(f"Error in scan_new_tokens main loop: {e}", exc_info=True)
 
     def _calculate_buy_sell_ratio(self, detailed_pair_data):
         """Calculates buy/sell ratio from detailed_pair_data (txns.h1)."""
