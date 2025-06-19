@@ -106,7 +106,8 @@ MIN_HOLDER_COUNT = get_env_var("MIN_HOLDER_COUNT", "100", int)
 # MIN_LP_LOCKED_PERCENTAGE removed
 
 # API endpoints
-DEXSCREENER_API = get_env_var("DEXSCREENER_API", "https://api.dexscreener.com/latest/dex", str)
+DEXSCREENER_SEARCH_API = get_env_var("DEXSCREENER_SEARCH_API", "https://api.dexscreener.com/latest/dex", str)
+DEXSCREENER_TOKEN_PROFILES_API = get_env_var("DEXSCREENER_TOKEN_PROFILES_API", "https://api.dexscreener.com/token-profiles/latest/v1", str)
 JUPITER_API = get_env_var("JUPITER_API", "https://quote-api.jup.ag/v1", str)
 
 # RugCheck.xyz Configuration
