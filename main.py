@@ -26,10 +26,13 @@ async def get_status():
             'current_price': current_price
         }
 
+    scanner_metrics_data = scanner.get_scanner_metrics()
+
     return {
-        "metrics": trader.performance_metrics,
+        "trader_metrics": trader.performance_metrics, # Renamed "metrics" to "trader_metrics"
         "active_positions": active_positions,
-        "position_history": trader.position_history
+        "position_history": trader.position_history,
+        "scanner_metrics": scanner_metrics_data # Added scanner_metrics
     }
 
 async def start_bot():
