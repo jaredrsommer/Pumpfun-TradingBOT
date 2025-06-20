@@ -453,9 +453,10 @@ class TokenScanner:
                     return default_result(['Empty/invalid response from RugCheck'], 'Invalid API response format')
 
                 is_safe = True; reasons = []
-                score = response_data.get('score')
-                score_normalised_value = response_data.get('scoreNormalised')
-                logger.debug(f"RugCheck raw scores for {token_address}: score='{score}', scoreNormalised='{score_normalised_value}'")
+                # Correctly get raw values using the right key for normalised score
+                api_raw_score = response_data.get('score')
+                api_raw_score_normalised = response_data.get('score_normalised') # Corrected key
+                logger.debug(f"RugCheck raw scores for {token_address}: score='{api_raw_score}', score_normalised='{api_raw_score_normalised}'")
 
                 # Score check (Lower scores are better. RUGCHECK_SCORE_THRESHOLD is the max acceptable score.)
                 VALID_SCORE_MIN = 0.0
@@ -464,35 +465,35 @@ class TokenScanner:
                 check_score = None
                 selected_score_field_name = None
 
-                # Try scoreNormalised first
-                if score_normalised_value is not None:
+                # Try score_normalised first (using the raw value from API)
+                if api_raw_score_normalised is not None:
                     try:
-                        temp_score_norm = float(score_normalised_value)
+                        temp_score_norm = float(api_raw_score_normalised)
                         if VALID_SCORE_MIN <= temp_score_norm <= VALID_SCORE_MAX:
                             check_score = temp_score_norm
-                            selected_score_field_name = "scoreNormalised"
+                            selected_score_field_name = "score_normalised"
                         else:
-                            logger.warning(f"RugCheck: scoreNormalised ('{score_normalised_value}') for {token_address} is outside valid range ({VALID_SCORE_MIN}-{VALID_SCORE_MAX}).")
+                            logger.warning(f"RugCheck: score_normalised ('{api_raw_score_normalised}') for {token_address} is outside valid range ({VALID_SCORE_MIN}-{VALID_SCORE_MAX}).")
                     except (ValueError, TypeError):
-                        logger.warning(f"RugCheck: scoreNormalised ('{score_normalised_value}') for {token_address} is not a valid number.")
+                        logger.warning(f"RugCheck: score_normalised ('{api_raw_score_normalised}') for {token_address} is not a valid number.")
 
-                # If scoreNormalised wasn't valid or used, try 'score'
-                if check_score is None and score is not None:
+                # If score_normalised wasn't valid or used, try 'score' (using the raw value from API)
+                if check_score is None and api_raw_score is not None:
                     try:
-                        temp_score = float(score)
+                        temp_score = float(api_raw_score)
                         if VALID_SCORE_MIN <= temp_score <= VALID_SCORE_MAX:
                             check_score = temp_score
                             selected_score_field_name = "score"
                         else:
-                            logger.warning(f"RugCheck: score ('{score}') for {token_address} is outside valid range ({VALID_SCORE_MIN}-{VALID_SCORE_MAX}).")
+                            logger.warning(f"RugCheck: score ('{api_raw_score}') for {token_address} is outside valid range ({VALID_SCORE_MIN}-{VALID_SCORE_MAX}).")
                     except (ValueError, TypeError):
-                        logger.warning(f"RugCheck: score ('{score}') for {token_address} is not a valid number.")
+                        logger.warning(f"RugCheck: score ('{api_raw_score}') for {token_address} is not a valid number.")
 
                 # Now, process check_score
                 if check_score is None:
-                    is_safe = False # Mark as unsafe if no valid score could be determined
+                    is_safe = False
                     reasons.append("No valid score (normalised or raw) available from RugCheck after validation.")
-                    logger.warning(f"RugCheck: No valid score found for {token_address} after checking score='{score}' and scoreNormalised='{score_normalised_value}'.")
+                    logger.warning(f"RugCheck: No valid score found for {token_address} after checking score='{api_raw_score}' and score_normalised='{api_raw_score_normalised}'.")
                 else:
                     logger.info(f"RugCheck: Using '{selected_score_field_name}' value {check_score:.2f} for token {token_address} against threshold {RUGCHECK_SCORE_THRESHOLD}.")
                     if check_score > RUGCHECK_SCORE_THRESHOLD:
@@ -527,11 +528,15 @@ class TokenScanner:
                                 logger.warning(f"Token {token_address}: Freeze authority is ENABLED.")
 
                 return {
-                    'is_safe': is_safe, 'score': score, 'score_normalised': score_normalised_value,
-                    'risks': api_risks_raw if api_risks_raw is not None else [], # Return original 'risks' value, or empty list if it was None
-                    'reasons': reasons, 'api_error': None
+                    'is_safe': is_safe,
+                    'score_api_raw': api_raw_score, # Use the new var names for clarity
+                    'score_normalised_api_raw': api_raw_score_normalised, # Use the new var names
+                    'score_value_used': check_score,
+                    'risks': api_risks_raw if api_risks_raw is not None else [],
+                    'reasons': reasons,
+                    'api_error': None
                 }
-        except aiohttp.ClientResponseError as e: return default_result([f"HTTP error: {e.status} - {e.message}"], str(e)) # Include e.message
+        except aiohttp.ClientResponseError as e: return default_result([f"HTTP error: {e.status} - {e.message}"], str(e))
         except asyncio.TimeoutError: return default_result(["API call timed out"], "Timeout")
         except aiohttp.ContentTypeError as e: return default_result(["JSON decode error"], str(e)) # ContentTypeError might not have a clean .message
         except Exception as e:
