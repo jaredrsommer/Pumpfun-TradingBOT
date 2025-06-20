@@ -35,10 +35,12 @@ class TokenScanner:
         self.session: Optional[aiohttp.ClientSession] = None
         self.potential_tokens = []
         self.scan_count = 0
-        # Initialize with a static JWT from config if provided.
-        # This will be overwritten by a dynamically generated JWT if dynamic generation is successful.
         self.rugcheck_jwt: Optional[str] = STATIC_RUGCHECK_JWT
         self.rugcheck_jwt_generation_attempted: bool = False
+        # Metrics for unique tokens scanned
+        self.unique_tokens_scanned_today = set()
+        self.last_scan_reset_time = datetime.now()
+        self.total_unique_tokens_ever = set()
 
     async def _ensure_rugcheck_jwt(self) -> None:
         """
@@ -224,6 +226,12 @@ class TokenScanner:
     async def scan_new_tokens(self):
         """Phase 1 & 2 & 3: Discover, Fetch Details, and Analyze Tokens."""
         try:
+            # Daily reset logic for unique scanned tokens
+            if datetime.now() - self.last_scan_reset_time > timedelta(hours=24):
+                logger.info(f"🔄 Resetting daily unique token scan count. Previous count: {len(self.unique_tokens_scanned_today)}")
+                self.unique_tokens_scanned_today = set()
+                self.last_scan_reset_time = datetime.now()
+
             # Use DEXSCREENER_TOKEN_PROFILES_API for Phase 1
             params = {"chainId": "solana"}
             logger.info(f"🔄 Starting scan for new token profiles using {DEXSCREENER_TOKEN_PROFILES_API} with params {params}")
@@ -238,6 +246,10 @@ class TokenScanner:
                     if not base_token_address:
                         logger.debug("Skipping profile due to missing tokenAddress. ⏭️")
                         continue
+
+                    # Add to unique scanned sets
+                    self.unique_tokens_scanned_today.add(base_token_address)
+                    self.total_unique_tokens_ever.add(base_token_address)
 
                     base_token_address_short = _shorten_address(base_token_address)
                     token_symbol_from_profile = token_profile.get('symbol') or token_profile.get('name') or "UnknownSymbol"
@@ -354,6 +366,54 @@ class TokenScanner:
             return float('inf')
         return 0.0 # No buys or sells in H1
 
+    def get_scanner_metrics(self) -> dict:
+        """Returns a dictionary of current scanner metrics, including recent potential tokens."""
+        recent_tokens_details = []
+        # Get the last 3 tokens, or fewer if not enough are present
+        num_to_fetch = min(3, len(self.potential_tokens))
+
+        for token_entry in self.potential_tokens[-num_to_fetch:]:
+            detailed_pair_data = token_entry.get('detailed_pair_data', {})
+
+            # Symbol prioritization
+            symbol = detailed_pair_data.get('baseToken', {}).get('symbol')
+            if not symbol: # Fallback to symbol stored directly in token_entry (from phase 1 profile)
+                symbol = token_entry.get('symbol', 'N/A')
+
+            pair_address = token_entry.get('pair_address', 'N/A')
+            pair_address_short = _shorten_address(pair_address) if pair_address != 'N/A' else 'N/A'
+
+            price_usd_raw = detailed_pair_data.get('priceUsd')
+            price_usd_str = "N/A"
+            if price_usd_raw is not None:
+                try:
+                    price_usd_str = f"{float(price_usd_raw):.6f}" # Format to 6 decimal places
+                except (ValueError, TypeError):
+                    price_usd_str = str(price_usd_raw) # Keep original if not floatable
+
+            discovered_at_raw = token_entry.get('phase1_discovered_at') or token_entry.get('timestamp')
+            discovered_at_iso = "N/A"
+            if isinstance(discovered_at_raw, datetime):
+                discovered_at_iso = discovered_at_raw.isoformat()
+            elif discovered_at_raw is not None: # If it's already a string or other type
+                discovered_at_iso = str(discovered_at_raw)
+
+            recent_tokens_details.append({
+                "symbol": symbol,
+                "pair_address_short": pair_address_short,
+                "price_usd": price_usd_str,
+                "discovered_at": discovered_at_iso
+            })
+
+        return {
+            "unique_tokens_scanned_today": len(self.unique_tokens_scanned_today),
+            "total_unique_tokens_scanned_all_time": len(self.total_unique_tokens_ever),
+            "potential_tokens_count": len(self.potential_tokens),
+            "potential_tokens_recent": recent_tokens_details,
+            "rugcheck_jwt_status": "Loaded" if self.rugcheck_jwt else "Not Loaded",
+            "last_daily_reset_at": self.last_scan_reset_time.isoformat()
+        }
+
     async def verify_token_safety_rugcheck(self, session: aiohttp.ClientSession, token_address: str) -> dict:
         """
         Verifies token safety using the RugCheck.xyz API endpoint (/v1/tokens/{id}/report/summary).
@@ -395,20 +455,51 @@ class TokenScanner:
                 is_safe = True; reasons = []
                 score = response_data.get('score')
                 score_normalised_value = response_data.get('scoreNormalised')
+                logger.debug(f"RugCheck raw scores for {token_address}: score='{score}', scoreNormalised='{score_normalised_value}'")
 
-                # Score check (RUGCHECK_SCORE_THRESHOLD is min acceptable, higher is better for score_normalised)
-                check_score = score_normalised_value if score_normalised_value is not None else score
+                # Score check (Lower scores are better. RUGCHECK_SCORE_THRESHOLD is the max acceptable score.)
+                VALID_SCORE_MIN = 0.0
+                VALID_SCORE_MAX = 150.0 # Assuming scores don't realistically go much higher
+
+                check_score = None
+                selected_score_field_name = None
+
+                # Try scoreNormalised first
+                if score_normalised_value is not None:
+                    try:
+                        temp_score_norm = float(score_normalised_value)
+                        if VALID_SCORE_MIN <= temp_score_norm <= VALID_SCORE_MAX:
+                            check_score = temp_score_norm
+                            selected_score_field_name = "scoreNormalised"
+                        else:
+                            logger.warning(f"RugCheck: scoreNormalised ('{score_normalised_value}') for {token_address} is outside valid range ({VALID_SCORE_MIN}-{VALID_SCORE_MAX}).")
+                    except (ValueError, TypeError):
+                        logger.warning(f"RugCheck: scoreNormalised ('{score_normalised_value}') for {token_address} is not a valid number.")
+
+                # If scoreNormalised wasn't valid or used, try 'score'
+                if check_score is None and score is not None:
+                    try:
+                        temp_score = float(score)
+                        if VALID_SCORE_MIN <= temp_score <= VALID_SCORE_MAX:
+                            check_score = temp_score
+                            selected_score_field_name = "score"
+                        else:
+                            logger.warning(f"RugCheck: score ('{score}') for {token_address} is outside valid range ({VALID_SCORE_MIN}-{VALID_SCORE_MAX}).")
+                    except (ValueError, TypeError):
+                        logger.warning(f"RugCheck: score ('{score}') for {token_address} is not a valid number.")
+
+                # Now, process check_score
                 if check_score is None:
-                    is_safe = False
-                    reasons.append("Score (normalised or raw) missing from RugCheck.")
-                elif not isinstance(check_score, (int, float)):
-                    is_safe = False
-                    reasons.append(f"Score ({check_score}) from RugCheck is not numeric.")
-                elif check_score > RUGCHECK_SCORE_THRESHOLD: # Changed from < to >
-                    is_safe = False
-                    reasons.append(f"Score ({check_score}) is above threshold ({RUGCHECK_SCORE_THRESHOLD}).") # Updated reason
+                    is_safe = False # Mark as unsafe if no valid score could be determined
+                    reasons.append("No valid score (normalised or raw) available from RugCheck after validation.")
+                    logger.warning(f"RugCheck: No valid score found for {token_address} after checking score='{score}' and scoreNormalised='{score_normalised_value}'.")
+                else:
+                    logger.info(f"RugCheck: Using '{selected_score_field_name}' value {check_score:.2f} for token {token_address} against threshold {RUGCHECK_SCORE_THRESHOLD}.")
+                    if check_score > RUGCHECK_SCORE_THRESHOLD:
+                        is_safe = False
+                        reasons.append(f"Score ({check_score:.2f} from {selected_score_field_name}) is above threshold ({RUGCHECK_SCORE_THRESHOLD}).")
 
-                # Risks field handling
+                # Risks field handling (remains the same, processes `is_safe` which might have been set by score check)
                 api_risks_raw = response_data.get('risks') # Get raw value first
                 api_risks_for_iteration = [] # Default to empty list for iteration logic
 
