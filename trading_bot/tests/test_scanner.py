@@ -78,8 +78,9 @@ MOCK_PAIR_SEARCH_RESPONSE_FAILS_METRICS = {"pairs": [MOCK_DETAILED_PAIR_DATA_FAI
 
 MOCK_EMPTY_PAIR_SEARCH_RESPONSE = {"pairs": []}
 
-MOCK_RUGCHECK_RESPONSE_SAFE = {"scoreNormalised": 5, "rugged": False, "risks": []}
-MOCK_RUGCHECK_RESPONSE_UNSAFE = {"scoreNormalised": 50, "rugged": True, "risks": [{"name": "Rugpull", "level": "critical"}]}
+# Updated to use score_normalised (lowercase_underscore)
+MOCK_RUGCHECK_RESPONSE_SAFE = {"score_normalised": 5, "rugged": False, "risks": []}
+MOCK_RUGCHECK_RESPONSE_UNSAFE = {"score_normalised": 50, "rugged": True, "risks": [{"name": "Rugpull", "level": "critical"}]}
 
 
 # --- Intelligent Mock for aiohttp.ClientSession.get ---
@@ -164,7 +165,7 @@ class TestTokenScanner(unittest.IsolatedAsyncioTestCase):
 
     # ... (Other _ensure_rugcheck_jwt tests can remain similar, ensuring fresh TokenScanner for config patches)
 
-    async def mock_rugcheck_response(self, status=200, score=None, score_normalised=None, risks=None, error_message=None):
+    async def mock_rugcheck_response(self, status=200, score=None, score_normalised_val=None, risks=None, error_message=None): # Renamed score_normalised to score_normalised_val
         mock_resp = AsyncMock(spec=aiohttp.ClientResponse)
         mock_resp.status = status
         mock_resp.__aenter__.return_value = mock_resp
@@ -178,8 +179,8 @@ class TestTokenScanner(unittest.IsolatedAsyncioTestCase):
         response_json = {}
         if score is not None:
             response_json['score'] = score
-        if score_normalised is not None:
-            response_json['scoreNormalised'] = score_normalised
+        if score_normalised_val is not None: # Use the new param name
+            response_json['score_normalised'] = score_normalised_val # Correct key
         response_json['risks'] = risks if risks is not None else []
 
         mock_resp.json = AsyncMock(return_value=response_json)
@@ -190,120 +191,137 @@ class TestTokenScanner(unittest.IsolatedAsyncioTestCase):
 
     @patch('trading_bot.scanner.RUGCHECK_SCORE_THRESHOLD', 10)
     @patch('aiohttp.ClientSession.get', new_callable=AsyncMock)
-    async def test_rugcheck_scoreNormalised_preferred_and_valid(self, mock_session_get):
-        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised=5, score=50)
+    async def test_rugcheck_score_normalised_preferred_and_valid(self, mock_session_get): # Renamed test
+        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised_val=5, score=50)
         result = await self.scanner.verify_token_safety_rugcheck(self.scanner.session, "token_addr")
         self.assertTrue(result['is_safe'])
-        self.assertEqual(result['score_normalised'], 5)
-        self.assertEqual(result['score'], 50)
-        self.assertNotIn("Score (5.00 from scoreNormalised) is above threshold (10).", result['reasons'])
+        self.assertEqual(result['score_normalised_api_raw'], 5) # Check the raw API value
+        self.assertEqual(result['score_api_raw'], 50)
+        self.assertEqual(result['score_value_used'], 5.0)
+        self.assertNotIn("Score (5.00 from score_normalised) is above threshold (10).", result['reasons'])
+
 
     @patch('trading_bot.scanner.RUGCHECK_SCORE_THRESHOLD', 10)
     @patch('aiohttp.ClientSession.get', new_callable=AsyncMock)
-    async def test_rugcheck_scoreNormalised_invalid_range_uses_valid_score(self, mock_session_get):
-        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised=160, score=8) # 160 is out of 0-150 range
+    async def test_rugcheck_score_normalised_invalid_range_uses_valid_score(self, mock_session_get): # Renamed
+        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised_val=160, score=8) # 160 is out of 0-150 range
         result = await self.scanner.verify_token_safety_rugcheck(self.scanner.session, "token_addr")
         self.assertTrue(result['is_safe']) # score=8 is used
-        self.assertEqual(result['score_normalised'], 160)
-        self.assertEqual(result['score'], 8)
+        self.assertEqual(result['score_normalised_api_raw'], 160)
+        self.assertEqual(result['score_api_raw'], 8)
+        self.assertEqual(result['score_value_used'], 8.0)
         self.assertNotIn("Score (8.00 from score) is above threshold (10).", result['reasons'])
 
     @patch('trading_bot.scanner.RUGCHECK_SCORE_THRESHOLD', 10)
     @patch('aiohttp.ClientSession.get', new_callable=AsyncMock)
-    async def test_rugcheck_scoreNormalised_non_numeric_uses_valid_score(self, mock_session_get):
-        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised="error", score=8)
+    async def test_rugcheck_score_normalised_non_numeric_uses_valid_score(self, mock_session_get): # Renamed
+        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised_val="error", score=8)
         result = await self.scanner.verify_token_safety_rugcheck(self.scanner.session, "token_addr")
         self.assertTrue(result['is_safe']) # score=8 is used
-        self.assertEqual(result['score_normalised'], "error")
-        self.assertEqual(result['score'], 8)
+        self.assertEqual(result['score_normalised_api_raw'], "error")
+        self.assertEqual(result['score_api_raw'], 8)
+        self.assertEqual(result['score_value_used'], 8.0)
+
 
     @patch('trading_bot.scanner.RUGCHECK_SCORE_THRESHOLD', 10)
     @patch('aiohttp.ClientSession.get', new_callable=AsyncMock)
-    async def test_rugcheck_scoreNormalised_valid_score_absent(self, mock_session_get):
-        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised=5, score=None)
+    async def test_rugcheck_score_normalised_valid_score_absent(self, mock_session_get): # Renamed
+        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised_val=5, score=None)
         result = await self.scanner.verify_token_safety_rugcheck(self.scanner.session, "token_addr")
         self.assertTrue(result['is_safe'])
-        self.assertEqual(result['score_normalised'], 5)
-        self.assertIsNone(result['score'])
+        self.assertEqual(result['score_normalised_api_raw'], 5)
+        self.assertIsNone(result['score_api_raw'])
+        self.assertEqual(result['score_value_used'], 5.0)
+
 
     @patch('trading_bot.scanner.RUGCHECK_SCORE_THRESHOLD', 10)
     @patch('aiohttp.ClientSession.get', new_callable=AsyncMock)
-    async def test_rugcheck_scoreNormalised_absent_score_valid(self, mock_session_get):
-        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised=None, score=5)
+    async def test_rugcheck_score_normalised_absent_score_valid(self, mock_session_get): # Renamed
+        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised_val=None, score=5)
         result = await self.scanner.verify_token_safety_rugcheck(self.scanner.session, "token_addr")
         self.assertTrue(result['is_safe'])
-        self.assertIsNone(result['score_normalised'])
-        self.assertEqual(result['score'], 5)
+        self.assertIsNone(result['score_normalised_api_raw'])
+        self.assertEqual(result['score_api_raw'], 5)
+        self.assertEqual(result['score_value_used'], 5.0)
+
 
     @patch('aiohttp.ClientSession.get', new_callable=AsyncMock)
     async def test_rugcheck_both_scores_invalid_range(self, mock_session_get):
-        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised=170, score=-10)
+        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised_val=170, score=-10)
         result = await self.scanner.verify_token_safety_rugcheck(self.scanner.session, "token_addr")
         self.assertFalse(result['is_safe'])
         self.assertIn("No valid score (normalised or raw) available from RugCheck after validation.", result['reasons'])
+        self.assertIsNone(result['score_value_used'])
+
 
     @patch('aiohttp.ClientSession.get', new_callable=AsyncMock)
     async def test_rugcheck_both_scores_non_numeric(self, mock_session_get):
-        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised="error1", score="error2")
+        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised_val="error1", score="error2")
         result = await self.scanner.verify_token_safety_rugcheck(self.scanner.session, "token_addr")
         self.assertFalse(result['is_safe'])
         self.assertIn("No valid score (normalised or raw) available from RugCheck after validation.", result['reasons'])
+        self.assertIsNone(result['score_value_used'])
 
     @patch('aiohttp.ClientSession.get', new_callable=AsyncMock)
     async def test_rugcheck_both_scores_none(self, mock_session_get):
-        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised=None, score=None)
+        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised_val=None, score=None)
         result = await self.scanner.verify_token_safety_rugcheck(self.scanner.session, "token_addr")
         self.assertFalse(result['is_safe'])
         self.assertIn("No valid score (normalised or raw) available from RugCheck after validation.", result['reasons'])
+        self.assertIsNone(result['score_value_used'])
 
     @patch('trading_bot.scanner.RUGCHECK_SCORE_THRESHOLD', 10)
     @patch('aiohttp.ClientSession.get', new_callable=AsyncMock)
     async def test_rugcheck_score_at_threshold(self, mock_session_get):
-        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised=10)
+        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised_val=10)
         result = await self.scanner.verify_token_safety_rugcheck(self.scanner.session, "token_addr")
-        self.assertTrue(result['is_safe']) # Score 10 should be safe if threshold is 10
+        self.assertTrue(result['is_safe'])
+        self.assertEqual(result['score_value_used'], 10.0)
 
     @patch('trading_bot.scanner.RUGCHECK_SCORE_THRESHOLD', 10)
     @patch('aiohttp.ClientSession.get', new_callable=AsyncMock)
     async def test_rugcheck_score_just_above_threshold(self, mock_session_get):
-        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised=10.1)
+        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised_val=10.1)
         result = await self.scanner.verify_token_safety_rugcheck(self.scanner.session, "token_addr")
         self.assertFalse(result['is_safe'])
-        self.assertIn("Score (10.10 from scoreNormalised) is above threshold (10).", result['reasons'])
+        self.assertEqual(result['score_value_used'], 10.1)
+        self.assertIn("Score (10.10 from score_normalised) is above threshold (10).", result['reasons'])
+
 
     @patch('trading_bot.scanner.RUGCHECK_SCORE_THRESHOLD', 10)
     @patch('aiohttp.ClientSession.get', new_callable=AsyncMock)
     async def test_rugcheck_score_at_valid_max_above_threshold(self, mock_session_get):
-        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised=150.0) # VALID_SCORE_MAX is 150
+        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised_val=150.0) # VALID_SCORE_MAX is 150
         result = await self.scanner.verify_token_safety_rugcheck(self.scanner.session, "token_addr")
         self.assertFalse(result['is_safe'])
-        self.assertIn("Score (150.00 from scoreNormalised) is above threshold (10).", result['reasons'])
+        self.assertEqual(result['score_value_used'], 150.0)
+        self.assertIn("Score (150.00 from score_normalised) is above threshold (10).", result['reasons'])
 
-    @patch('trading_bot.scanner.RUGCHECK_SCORE_THRESHOLD', 20) # Set threshold higher for this test
+    @patch('trading_bot.scanner.RUGCHECK_SCORE_THRESHOLD', 20)
     @patch('aiohttp.ClientSession.get', new_callable=AsyncMock)
-    async def test_rugcheck_problematic_reported_value(self, mock_session_get):
-        # scoreNormalised = "501" (out of range), score = "16.4" (valid, below threshold 20)
-        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised="501", score="16.4")
+    async def test_rugcheck_problematic_reported_value_safe_fallback(self, mock_session_get): # Renamed
+        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised_val="501", score="16.4")
         result = await self.scanner.verify_token_safety_rugcheck(self.scanner.session, "token_addr")
-        self.assertTrue(result['is_safe']) # Should use score 16.4, which is < 20
-        self.assertEqual(result['score_normalised'], "501") # Raw value preserved
-        self.assertEqual(result['score'], "16.4")       # Raw value preserved
+        self.assertTrue(result['is_safe'])
+        self.assertEqual(result['score_normalised_api_raw'], "501")
+        self.assertEqual(result['score_api_raw'], "16.4")
+        self.assertEqual(result['score_value_used'], 16.4)
         self.assertNotIn(f"Score (16.40 from score) is above threshold (20).", result['reasons'])
 
-    @patch('trading_bot.scanner.RUGCHECK_SCORE_THRESHOLD', 5) # Set threshold lower for this test
+    @patch('trading_bot.scanner.RUGCHECK_SCORE_THRESHOLD', 5)
     @patch('aiohttp.ClientSession.get', new_callable=AsyncMock)
-    async def test_rugcheck_problematic_reported_value_unsafe(self, mock_session_get):
-        # scoreNormalised = "501" (out of range), score = "16.4" (valid, BUT above threshold 5)
-        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised="501", score="16.4")
+    async def test_rugcheck_problematic_reported_value_unsafe_fallback(self, mock_session_get): # Renamed
+        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised_val="501", score="16.4")
         result = await self.scanner.verify_token_safety_rugcheck(self.scanner.session, "token_addr")
-        self.assertFalse(result['is_safe']) # Should use score 16.4, which is > 5
+        self.assertFalse(result['is_safe'])
+        self.assertEqual(result['score_value_used'], 16.4)
         self.assertIn(f"Score (16.40 from score) is above threshold (5).", result['reasons'])
 
     @patch('trading_bot.scanner.RUGCHECK_SCORE_THRESHOLD', 10)
     @patch('aiohttp.ClientSession.get', new_callable=AsyncMock)
     async def test_rugcheck_critical_risk_overrides_good_score(self, mock_session_get):
         critical_risks = [{"name": "Honeypot", "level": "critical", "description": "It's a trap!"}]
-        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised=5, risks=critical_risks) # Good score
+        mock_session_get.return_value = await self.mock_rugcheck_response(score_normalised_val=5, risks=critical_risks) # Good score
         with patch('trading_bot.scanner.RUGCHECK_CRITICAL_RISK_NAMES', ["Honeypot"]):
             result = await self.scanner.verify_token_safety_rugcheck(self.scanner.session, "token_addr")
         self.assertFalse(result['is_safe'])
