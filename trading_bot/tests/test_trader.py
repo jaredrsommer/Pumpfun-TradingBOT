@@ -150,5 +150,3 @@ if __name__ == '__main__':
     # This allows running the tests directly via `python trading_bot/tests/test_trader.py`
     # For discovery, use `python -m unittest discover -s trading_bot/tests`
     asyncio.run(unittest.main())
-
-```

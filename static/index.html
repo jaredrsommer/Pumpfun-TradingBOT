@@ -20,13 +20,66 @@
         .token-info { font-size: 0.9em; }
         h2, h5 { color: #FFFFFF; }
         a { color: #17a2b8; }
+        .dry-run-badge {
+            background-color: #ffc107;
+            color: #000;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-weight: bold;
+            font-size: 0.85em;
+            margin-left: 12px;
+            vertical-align: middle;
+        }
+        .live-badge {
+            background-color: #dc3545;
+            color: #fff;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-weight: bold;
+            font-size: 0.85em;
+            margin-left: 12px;
+            vertical-align: middle;
+        }
+        .ticker-container {
+            width: 100%;
+            overflow: hidden;
+            background-color: #282828;
+            padding: 10px 0;
+            white-space: nowrap;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+            margin-bottom: 20px;
+        }
+        .ticker-content {
+            display: inline-block;
+            animation: marquee 30s linear infinite;
+        }
+        .ticker-item {
+            display: inline-block;
+            padding: 0 20px;
+            font-size: 1.1em;
+            color: #17a2b8;
+            font-weight: bold;
+        }
+        .ticker-item span {
+            color: #FFFFFF;
+        }
+        @keyframes marquee {
+            0% { transform: translateX(100%); }
+            100% { transform: translateX(-100%); }
+        }
     </style>
 </head>
 <body>
+    <div class="ticker-container">
+        <div class="ticker-content" id="recent-tokens-ticker"></div>
+    </div>
+
     <div class="container-fluid py-4">
-        <h2 class="mb-4">Solana Trading Bot Dashboard</h2>
-        
-        <!-- Performance Metrics -->
+        <h2 class="mb-4">
+            Solana Trading Bot Dashboard
+            <span id="mode-badge" class="dry-run-badge">DRY RUN</span>
+        </h2>
+
         <div class="row mb-4">
             <div class="col-md-3">
                 <div class="card">
@@ -55,14 +108,13 @@
             <div class="col-md-3">
                 <div class="card">
                     <div class="card-body">
-                        <h5 class="card-title">Potential Tokens</h5>
-                        <p class="metric-value" id="potential-tokens">-</p>
+                        <h5 class="card-title">Tokens Scanned Today</h5>
+                        <p class="metric-value" id="tokens-scanned">-</p>
                     </div>
                 </div>
             </div>
         </div>
 
-        <!-- Active Positions -->
         <div class="row mb-4">
             <div class="col-12">
                 <div class="card">
@@ -78,14 +130,12 @@
                                         <th>Entry Price</th>
                                         <th>Current Price</th>
                                         <th>P/L %</th>
-                                        <th>Size (SOL)</th>
-                                        <th>Take Profit Levels</th>
-                                        <th>Metrics</th>
+                                        <th>Amount (SOL)</th>
+                                        <th>Stop Loss</th>
+                                        <th>Take Profit</th>
                                     </tr>
                                 </thead>
-                                <tbody id="active-positions-table">
-                                    <!-- Positions will be populated here -->
-                                </tbody>
+                                <tbody id="active-positions-table"></tbody>
                             </table>
                         </div>
                     </div>
@@ -93,7 +143,6 @@
             </div>
         </div>
 
-        <!-- Position History -->
         <div class="row">
             <div class="col-12">
                 <div class="card">
@@ -109,13 +158,11 @@
                                         <th>Entry Price</th>
                                         <th>Exit Price</th>
                                         <th>P/L %</th>
+                                        <th>Amount (SOL)</th>
                                         <th>Duration</th>
-                                        <th>Take Profits Hit</th>
                                     </tr>
                                 </thead>
-                                <tbody id="position-history-table">
-                                    <!-- History will be populated here -->
-                                </tbody>
+                                <tbody id="position-history-table"></tbody>
                             </table>
                         </div>
                     </div>
@@ -126,78 +173,106 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        function updateDashboard() {
-            fetch('/api/status')
-                .then(response => response.json())
-                .then(data => {
-                    // Update metrics
-                    document.getElementById('success-rate').textContent = `${data.metrics.win_rate.toFixed(1)}%`;
-                    document.getElementById('total-pl').textContent = `${data.metrics.total_profit_loss.toFixed(2)}%`;
-                    document.getElementById('active-positions').textContent = Object.keys(data.active_positions).length;
-                    document.getElementById('potential-tokens').textContent = data.metrics.potential_trades;
-
-                    // Update active positions
-                    const activePositionsTable = document.getElementById('active-positions-table');
-                    activePositionsTable.innerHTML = '';
-                    
-                    Object.entries(data.active_positions).forEach(([address, position]) => {
-                        const row = document.createElement('tr');
-                        const pl = ((position.current_price - position.entry_price) / position.entry_price * 100).toFixed(2);
-                        const plClass = pl >= 0 ? 'profit' : 'loss';
-                        
-                        row.innerHTML = `
-                            <td>${position.symbol}</td>
-                            <td>$${position.entry_price.toFixed(6)}</td>
-                            <td>$${position.current_price.toFixed(6)}</td>
-                            <td class="${plClass}">${pl}%</td>
-                            <td>${position.size}</td>
-                            <td>${Object.entries(position.take_profit_levels)
-                                .map(([level, hit]) => `
-                                    <span class="badge ${hit ? 'bg-success' : 'bg-secondary'}">${level}%</span>
-                                `).join(' ')}
-                            </td>
-                            <td>
-                                <small>
-                                    Liq: $${position.metrics.liquidity.toLocaleString()}<br>
-                                    Vol: $${position.metrics.volume_24h.toLocaleString()}<br>
-                                    Holders: ${position.metrics.holders.toLocaleString()}<br>
-                                    B/S: ${position.metrics.buy_sell_ratio.toFixed(2)}
-                                </small>
-                            </td>
-                        `;
-                        activePositionsTable.appendChild(row);
-                    });
-
-                    // Update position history
-                    const historyTable = document.getElementById('position-history-table');
-                    historyTable.innerHTML = '';
-                    
-                    data.position_history.forEach(position => {
-                        const row = document.createElement('tr');
-                        const pl = ((position.exit_price - position.entry_price) / position.entry_price * 100).toFixed(2);
-                        const plClass = pl >= 0 ? 'profit' : 'loss';
-                        const duration = Math.round((new Date(position.exit_time) - new Date(position.entry_time)) / 60000);
-                        
-                        row.innerHTML = `
-                            <td>${position.symbol}</td>
-                            <td>$${position.entry_price.toFixed(6)}</td>
-                            <td>$${position.exit_price.toFixed(6)}</td>
-                            <td class="${plClass}">${pl}%</td>
-                            <td>${duration} min</td>
-                            <td>${Object.entries(position.take_profit_levels)
-                                .filter(([_, hit]) => hit)
-                                .map(([level, _]) => `
-                                    <span class="badge bg-success">${level}%</span>
-                                `).join(' ')}
-                            </td>
-                        `;
-                        historyTable.appendChild(row);
-                    });
-                })
-                .catch(error => console.error('Error updating dashboard:', error));
+        function createCell(text, className) {
+            var td = document.createElement('td');
+            td.textContent = text;
+            if (className) td.className = className;
+            return td;
         }
 
-        // Update every 10 seconds
+        function formatPrice(price) {
+            if (price === null || price === undefined) return 'N/A';
+            return '$' + Number(price).toFixed(6);
+        }
+
+        function formatDuration(entryTime, exitTime) {
+            if (!entryTime || entryTime === 'N/A' || !exitTime || exitTime === 'N/A') return 'N/A';
+            var ms = new Date(exitTime) - new Date(entryTime);
+            var mins = Math.round(ms / 60000);
+            if (mins < 60) return mins + ' min';
+            var hours = Math.floor(mins / 60);
+            var remainMins = mins % 60;
+            return hours + 'h ' + remainMins + 'm';
+        }
+
+        function updateDashboard() {
+            fetch('/api/status')
+                .then(function(response) { return response.json(); })
+                .then(function(data) {
+                    var metrics = data.metrics || {};
+                    var winRate = metrics.win_rate || 0;
+                    var totalPL = metrics.total_profit_loss || 0;
+
+                    document.getElementById('success-rate').textContent = winRate.toFixed(1) + '%';
+                    document.getElementById('total-pl').textContent = totalPL.toFixed(2) + '%';
+                    document.getElementById('active-positions').textContent = Object.keys(data.active_positions || {}).length;
+
+                    var scannerMetrics = data.scanner_metrics || {};
+                    document.getElementById('tokens-scanned').textContent = scannerMetrics.unique_tokens_scanned_today || 0;
+
+                    // Active positions table
+                    var activeTable = document.getElementById('active-positions-table');
+                    while (activeTable.firstChild) { activeTable.removeChild(activeTable.firstChild); }
+
+                    var positions = data.active_positions || {};
+                    Object.keys(positions).forEach(function(address) {
+                        var pos = positions[address];
+                        var row = document.createElement('tr');
+                        var entryPrice = pos.entry_price || 0;
+                        var currentPrice = pos.current_price || 0;
+                        var pl = entryPrice > 0 ? ((currentPrice - entryPrice) / entryPrice * 100) : 0;
+                        var plClass = pl >= 0 ? 'profit' : 'loss';
+
+                        row.appendChild(createCell(pos.symbol || 'N/A'));
+                        row.appendChild(createCell(formatPrice(entryPrice)));
+                        row.appendChild(createCell(formatPrice(currentPrice)));
+                        row.appendChild(createCell(pl.toFixed(2) + '%', plClass));
+                        row.appendChild(createCell(pos.amount != null ? pos.amount.toFixed(4) : 'N/A'));
+                        row.appendChild(createCell(formatPrice(pos.stop_loss)));
+                        row.appendChild(createCell(formatPrice(pos.take_profit)));
+                        activeTable.appendChild(row);
+                    });
+
+                    // Position history table
+                    var historyTable = document.getElementById('position-history-table');
+                    while (historyTable.firstChild) { historyTable.removeChild(historyTable.firstChild); }
+
+                    var history = data.position_history || [];
+                    history.forEach(function(pos) {
+                        var row = document.createElement('tr');
+                        var pl = pos.profit_loss_pct || 0;
+                        var plClass = pl >= 0 ? 'profit' : 'loss';
+
+                        row.appendChild(createCell(pos.symbol || 'N/A'));
+                        row.appendChild(createCell(formatPrice(pos.entry_price)));
+                        row.appendChild(createCell(formatPrice(pos.exit_price)));
+                        row.appendChild(createCell(pl.toFixed(2) + '%', plClass));
+                        row.appendChild(createCell(pos.amount != null ? pos.amount.toFixed(4) : 'N/A'));
+                        row.appendChild(createCell(formatDuration(pos.entry_time, pos.exit_time)));
+                        historyTable.appendChild(row);
+                    });
+
+                    // Ticker
+                    var ticker = document.getElementById('recent-tokens-ticker');
+                    while (ticker.firstChild) { ticker.removeChild(ticker.firstChild); }
+
+                    var recentTokens = (scannerMetrics.potential_tokens_recent || []);
+                    // Duplicate for seamless marquee
+                    var allTokens = recentTokens.concat(recentTokens);
+                    allTokens.forEach(function(token) {
+                        var item = document.createElement('div');
+                        item.className = 'ticker-item';
+                        item.textContent = (token.symbol || '???') + ' ';
+                        var priceSpan = document.createElement('span');
+                        priceSpan.textContent = '$' + (token.price_usd || '0');
+                        item.appendChild(priceSpan);
+                        ticker.appendChild(item);
+                    });
+
+                })
+                .catch(function(error) { console.error('Error updating dashboard:', error); });
+        }
+
         setInterval(updateDashboard, 10000);
         updateDashboard();
     </script>

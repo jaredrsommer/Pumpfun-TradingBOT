@@ -1,16 +1,41 @@
 import asyncio
 import uvicorn
-from fastapi import FastAPI, WebSocket
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from trading_bot.trader import SolanaTrader
 from trading_bot.scanner import TokenScanner
-
-app = FastAPI()
-app.mount("/static", StaticFiles(directory="static"), name="static")
+from trading_bot.telegram_bot import TelegramBot
 
 trader = SolanaTrader()
 scanner = TokenScanner()
+telegram_bot = TelegramBot(trader=trader, scanner=scanner)
+trader.telegram = telegram_bot
+
+_background_tasks = []
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    await scanner.initialize()
+    scan_task = asyncio.create_task(scanner.start_scanning())
+    trade_task = asyncio.create_task(trader.start_trading(scanner))
+    _background_tasks.extend([scan_task, trade_task])
+    if telegram_bot.enabled:
+        tg_task = asyncio.create_task(telegram_bot.start_polling())
+        _background_tasks.append(tg_task)
+    yield
+    # Shutdown
+    for task in _background_tasks:
+        task.cancel()
+    await asyncio.gather(*_background_tasks, return_exceptions=True)
+    await scanner.close()
+    await trader.close_session()
+    await telegram_bot.close()
+
+app = FastAPI(lifespan=lifespan)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/")
 async def get_index():
@@ -29,20 +54,15 @@ async def get_status():
     scanner_metrics_data = scanner.get_scanner_metrics()
 
     return {
-        "trader_metrics": trader.performance_metrics, # Renamed "metrics" to "trader_metrics"
+        "metrics": trader.performance_metrics,
         "active_positions": active_positions,
         "position_history": trader.position_history,
-        "scanner_metrics": scanner_metrics_data # Added scanner_metrics
+        "scanner_metrics": scanner_metrics_data
     }
 
-async def start_bot():
-    await scanner.initialize()
-    asyncio.create_task(scanner.start_scanning())
-    asyncio.create_task(trader.start_trading(scanner))
-
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(start_bot())
+@app.get("/api/trades")
+async def get_trades(limit: int = 50):
+    return trader.db.get_trade_history(limit=limit)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

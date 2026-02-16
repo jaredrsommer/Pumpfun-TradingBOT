@@ -77,6 +77,10 @@ def get_env_var(var_name, default_value, cast_type=str):
         return default_value
 
 
+# Dry run / Preview mode
+# When True, the bot simulates trades without touching real funds.
+DRY_RUN = get_env_var("DRY_RUN", "true", bool)
+
 # Solana configuration
 SOLANA_NETWORK = get_env_var("SOLANA_NETWORK", "mainnet-beta", str)
 SOLANA_RPC_URL = get_env_var("SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com", str)
@@ -108,7 +112,6 @@ MIN_HOLDER_COUNT = get_env_var("MIN_HOLDER_COUNT", "100", int)
 # API endpoints
 DEXSCREENER_SEARCH_API = get_env_var("DEXSCREENER_SEARCH_API", "https://api.dexscreener.com/latest/dex", str)
 DEXSCREENER_TOKEN_PROFILES_API = get_env_var("DEXSCREENER_TOKEN_PROFILES_API", "https://api.dexscreener.com/token-profiles/latest/v1", str)
-JUPITER_API = get_env_var("JUPITER_API", "https://quote-api.jup.ag/v1", str)
 
 # RugCheck.xyz Configuration
 # STATIC_RUGCHECK_JWT: Optional pre-obtained JWT for RugCheck.xyz.
@@ -152,5 +155,9 @@ BOLLINGER_STD_DEV = get_env_var("BOLLINGER_STD_DEV", "2", int)
 # These are intended for generating a JWT to authenticate with RugCheck.xyz, not for general wallet operations.
 RUGCHECK_AUTH_SOLANA_PRIVATE_KEY = get_env_var("RUGCHECK_AUTH_SOLANA_PRIVATE_KEY", None, str)
 RUGCHECK_AUTH_WALLET_PUBLIC_KEY = get_env_var("RUGCHECK_AUTH_WALLET_PUBLIC_KEY", None, str)
+
+# Telegram Bot Configuration
+TELEGRAM_BOT_TOKEN = get_env_var("TELEGRAM_BOT_TOKEN", None, str)
+TELEGRAM_CHAT_ID = get_env_var("TELEGRAM_CHAT_ID", None, str)
 
 

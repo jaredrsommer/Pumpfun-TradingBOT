@@ -10,7 +10,6 @@ from .config import (
     DEXSCREENER_TOKEN_PROFILES_API, DEXSCREENER_SEARCH_API, # Updated API vars
     TARGET_MARKET_CAP_TO_SCAN, MAX_MARKET_CAP, MAX_TOKEN_AGE_HOURS,
     MIN_LIQUIDITY, MIN_TRANSACTIONS, MIN_BUY_SELL_RATIO, VOLUME_SPIKE_THRESHOLD,
-    MIN_HOLDER_COUNT,
     RUGCHECK_API_ENDPOINT,
     STATIC_RUGCHECK_JWT,
     RUGCHECK_AUTH_SOLANA_PRIVATE_KEY,
@@ -564,7 +563,15 @@ class TokenScanner:
         return self.potential_tokens
 
     async def start_scanning(self):
-        await self.initialize()
-        while True:
-            await self.scan_new_tokens()
-            await asyncio.sleep(60)
+            """Starts the continuous scanning process for new tokens."""
+            logger.info("Starting token scanner in a continuous loop...")
+            await self.initialize() # Ensure session and JWT are initialized
+
+            while True:
+                try:
+                    await self.scan_new_tokens()
+                    # You might want to add a delay here to avoid hammering APIs
+                    await asyncio.sleep(60) # Scan every 60 seconds (adjust as needed)
+                except Exception as e:
+                    logger.error(f"Error during continuous scanning: {e}", exc_info=True)
+                    await asyncio.sleep(30) # Wait before retrying after an error
